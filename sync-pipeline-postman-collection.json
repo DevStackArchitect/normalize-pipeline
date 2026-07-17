@@ -1,0 +1,495 @@
+{
+  "info": {
+    "name": "Multi-Source Sync Pipeline",
+    "description": "API collection for the sync-pipeline take-home: ingests HubSpot contacts, Razorpay test payments, and Google Calendar events into one normalized Postgres schema.\n\nSetup: set the `baseUrl` variable (local dev default http://localhost:3000, or https://normalize-pipeline.vercel.app for production) and paste the `DEBUG_SECRET` value from your .env into the `debugSecret` variable.\n\nAll responses are JSON. Errors use { \"error\": string } with appropriate status codes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "debugSecret",
+      "value": "PASTE_DEBUG_SECRET_FROM_ENV",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Pings the database with SELECT 1.\n\n200: { \"ok\": true }\n500: { \"error\": \"database unreachable\" }"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sync",
+      "item": [
+        {
+          "name": "POST /sync (all sources)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync"
+              ]
+            },
+            "description": "Runs all three adapters sequentially and returns per-source run summaries.\n\n200 example:\n{ \"runs\": [ { \"source\": \"hubspot\", \"status\": \"ok\", \"upserted\": 2, \"rejected\": 0, \"durationMs\": 5247, \"error\": null }, ... ] }\n\nStatus values: ok | fallback_full | failed | skipped_locked.\n\nDemo scenario 1 (idempotency): send this twice back to back; the second run upserts 0 new rows and GET /records totals are unchanged."
+          }
+        },
+        {
+          "name": "POST /sync/hubspot",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sync/hubspot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "hubspot"
+              ]
+            },
+            "description": "Runs only the HubSpot contacts adapter. First run does a full fetch; later runs use the saved lastmodifieddate cursor via the search API.\n\n404 for unknown source names."
+          }
+        },
+        {
+          "name": "POST /sync/razorpay",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sync/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "razorpay"
+              ]
+            },
+            "description": "Runs only the Razorpay payments adapter. First run does a full fetch; later runs use the saved created_at-timestamp cursor (from= filter). Razorpay replaces the spec's Stripe source because Stripe onboarding is unavailable regionally; the adapter semantics are identical."
+          }
+        },
+        {
+          "name": "POST /sync/gcal",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/sync/gcal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "gcal"
+              ]
+            },
+            "description": "Runs only the Google Calendar adapter. First run does a full fetch and stores the nextSyncToken; later runs use the sync token. An expired or corrupted token (Google returns HTTP 410 GONE) automatically falls back to a full backfill with status fallback_full."
+          }
+        },
+        {
+          "name": "GET /sync/runs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/sync/runs?limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "sync",
+                "runs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "Max rows, default 20, cap 500"
+                }
+              ]
+            },
+            "description": "Latest sync_runs rows, newest first. Each row: id, source, started_at, finished_at, status, upserted, rejected, error."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Records",
+      "item": [
+        {
+          "name": "GET /records (all)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/records?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "source",
+                  "value": "hubspot",
+                  "description": "hubspot | razorpay | gcal",
+                  "disabled": true
+                },
+                {
+                  "key": "entity_type",
+                  "value": "contact",
+                  "description": "contact | payment | event",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "Max rows, default 50, cap 500"
+                }
+              ]
+            },
+            "description": "Normalized records, newest synced_at first, plus a total count honoring the filters. Enable the source / entity_type params to filter.\n\n200 example:\n{ \"total\": 2, \"records\": [ { \"id\": \"1\", \"source\": \"hubspot\", \"external_id\": \"...\", \"entity_type\": \"contact\", \"title\": \"...\", \"amount_cents\": null, \"currency\": null, \"occurred_at\": \"...\", \"source_updated_at\": \"...\", \"raw\": { ... }, \"synced_at\": \"...\" } ] }"
+          }
+        },
+        {
+          "name": "GET /records?source=hubspot",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/records?source=hubspot&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "source",
+                  "value": "hubspot"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Demo scenario 5 (normalization): compare this with the razorpay and gcal variants; three differently shaped APIs land in one canonical shape."
+          }
+        },
+        {
+          "name": "GET /records?source=razorpay",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/records?source=razorpay&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "source",
+                  "value": "razorpay"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /records?source=gcal",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/records?source=gcal&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "source",
+                  "value": "gcal"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Webhooks",
+      "item": [
+        {
+          "name": "POST /webhooks/razorpay (event envelope)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entity\": \"event\",\n  \"account_id\": \"acc_demo\",\n  \"event\": \"payment.captured\",\n  \"contains\": [\n    \"payment\"\n  ],\n  \"payload\": {\n    \"payment\": {\n      \"entity\": {\n        \"id\": \"pay_demo_1\",\n        \"entity\": \"payment\",\n        \"amount\": 1200,\n        \"currency\": \"INR\",\n        \"created_at\": 1767225600,\n        \"description\": \"Demo payment\"\n      }\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "Maps the body through the Razorpay adapter's webhook mapper, then the same single upsert path the sync engine uses.\n\n200: { \"upserted\": 1, \"rejected\": 0 }\n\nDemo scenario 4 (webhook idempotency): send this twice; exactly one row exists for pay_demo_1 afterwards (check GET /records?source=razorpay). Signature verification is intentionally out of scope."
+          }
+        },
+        {
+          "name": "POST /webhooks/razorpay (bare payment entity)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"pay_demo_2\",\n  \"entity\": \"payment\",\n  \"amount\": 4200,\n  \"currency\": \"INR\",\n  \"created_at\": 1767312000,\n  \"description\": \"Bare payment payload\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "The adapter also accepts a bare payment entity (no event envelope). Produces the identical row shape as the envelope form."
+          }
+        },
+        {
+          "name": "POST /webhooks/razorpay (invalid, gets quarantined)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"entity\": \"payment\",\n  \"description\": \"payment with no id at all\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "razorpay"
+              ]
+            },
+            "description": "A payment-shaped payload missing its id fails validation (empty externalId) and is quarantined into rejected_records instead of throwing.\n\n200: { \"upserted\": 0, \"rejected\": 1 }"
+          }
+        },
+        {
+          "name": "POST /webhooks/hubspot (contact object)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"999000111\",\n  \"properties\": {\n    \"firstname\": \"Webhook\",\n    \"lastname\": \"Contact\",\n    \"email\": \"webhook.contact@example.com\",\n    \"createdate\": \"2026-07-01T10:00:00.000Z\",\n    \"lastmodifieddate\": \"2026-07-15T12:30:00.000Z\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/hubspot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "hubspot"
+              ]
+            },
+            "description": "Accepts a HubSpot contact object (or an array of them) in the CRM v3 shape.\n\n200: { \"upserted\": 1, \"rejected\": 0 }"
+          }
+        },
+        {
+          "name": "POST /webhooks/gcal (event resource)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"webhookevent001\",\n  \"summary\": \"Webhook test event\",\n  \"updated\": \"2026-07-15T09:00:00.000Z\",\n  \"start\": {\n    \"dateTime\": \"2026-07-20T15:00:00+05:30\"\n  },\n  \"end\": {\n    \"dateTime\": \"2026-07-20T16:00:00+05:30\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/gcal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "gcal"
+              ]
+            },
+            "description": "Accepts a Google Calendar event resource, an array of them, or an { items: [...] } container.\n\n200: { \"upserted\": 1, \"rejected\": 0 }"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Debug",
+      "item": [
+        {
+          "name": "POST /debug/corrupt-cursor/gcal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-debug-secret",
+                "value": "{{debugSecret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/debug/corrupt-cursor/gcal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "corrupt-cursor",
+                "gcal"
+              ]
+            },
+            "description": "Overwrites the stored gcal cursor with the string \"corrupted-cursor\".\n\nDemo scenario 2 (stale cursor fallback): call this, then POST /sync/gcal. Google rejects the bogus sync token with HTTP 410 GONE, the engine falls back to a full backfill, the run reports status fallback_full, and record counts are unchanged (no duplicates).\n\n403 without the correct x-debug-secret header. 200: { \"ok\": true, \"source\": \"gcal\", \"cursor\": \"corrupted-cursor\" }"
+          }
+        },
+        {
+          "name": "POST /debug/corrupt-cursor/hubspot",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-debug-secret",
+                "value": "{{debugSecret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/debug/corrupt-cursor/hubspot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "corrupt-cursor",
+                "hubspot"
+              ]
+            },
+            "description": "Same fallback demo for HubSpot: the corrupted cursor makes the search API return 400 (invalid timestamp), which the adapter treats as a stale cursor and falls back to a full fetch."
+          }
+        },
+        {
+          "name": "POST /debug/corrupt-cursor/razorpay",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-debug-secret",
+                "value": "{{debugSecret}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/debug/corrupt-cursor/razorpay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "corrupt-cursor",
+                "razorpay"
+              ]
+            },
+            "description": "Same fallback demo for Razorpay: \"corrupted-cursor\" fails to parse as a positive integer, which the adapter treats as a stale cursor and falls back to a full fetch."
+          }
+        },
+        {
+          "name": "POST /debug/corrupt-cursor/gcal (wrong secret, 403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-debug-secret",
+                "value": "wrong-secret"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/debug/corrupt-cursor/gcal",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debug",
+                "corrupt-cursor",
+                "gcal"
+              ]
+            },
+            "description": "Demonstrates the secret guard.\n\n403: { \"error\": \"forbidden\" }"
+          }
+        }
+      ]
+    }
+  ]
+}
